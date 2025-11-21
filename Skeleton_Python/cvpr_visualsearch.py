@@ -3,8 +3,9 @@ import numpy as np
 import scipy.io as sio
 import cv2
 from random import randint
+from cvpr_compare import cvpr_compare
 
-DESCRIPTOR_FOLDER = 'c:/visiondemo/cwsolution/descriptors'
+DESCRIPTOR_FOLDER = '/user/HS402/jm02999/Documents/cvpr-visual-search/descriptors'
 DESCRIPTOR_SUBFOLDER = 'globalRGBhisto'
 
 # Load all descriptors
@@ -39,6 +40,7 @@ dst.sort(key=lambda x: x[0])
 SHOW = 15
 for i in range(SHOW):
     img = cv2.imread(ALLFILES[dst[i][1]])
+    print(f"img type: {type(img)}")
     img = cv2.resize(img, (img.shape[1] // 2, img.shape[0] // 2))  # Make image quarter size
     cv2.imshow(f"Result {i+1}", img)
     cv2.waitKey(0)

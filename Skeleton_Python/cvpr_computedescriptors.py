@@ -2,9 +2,10 @@ import os
 import numpy as np
 import cv2
 import scipy.io as sio
+from extractRandom import extractRandom as extract_random
 
-DATASET_FOLDER = 'c:/visiondemo/cwsolution/MSRC_ObjCategImageDatabase_v2'
-OUT_FOLDER = 'c:/visiondemo/cwsolution/descriptors'
+DATASET_FOLDER = '/user/HS402/jm02999/Documents/cvpr-visual-search/MSRC_ObjCategImageDatabase_v2'
+OUT_FOLDER = '/user/HS402/jm02999/Documents/cvpr-visual-search/descriptors'
 OUT_SUBFOLDER = 'globalRGBhisto'
 
 # Ensure the output directory exists
