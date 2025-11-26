@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from extractRandom import extractRandom as extract_random
+from extractColorDescriptor import extract_color_descriptor
 
 DEFAULT_BASE_PATH = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BASE_PATH = os.getenv("BASE_PATH", DEFAULT_BASE_PATH)
@@ -33,7 +34,7 @@ def main() -> None:
         fout = os.path.join(OUT_FOLDER, OUT_SUBFOLDER, filename.replace('.bmp', '.mat'))
 
         # Call extractRandom (or another feature extraction function) to get the descriptor
-        F = extract_random(img)
+        F = extract_color_descriptor(img)
 
         # Save the descriptor to a .mat file
         sio.savemat(fout, {'F': F})
