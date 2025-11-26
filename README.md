@@ -1,1 +1,1 @@
-Program for visually searching an image collection
+# Program for visually searching an image collection
