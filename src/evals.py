@@ -115,6 +115,23 @@ class EvaluationReporter:
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
         plt.show()
+
+    def plot_precision_recall_curve(self, metrics: EvaluationMetrics, save_path: Optional[str] = None):
+        """Plot precision-recall curve"""
+        # Retrieve per-class precision and recall as lists and plot PR curve for each class
+        precisions = [metrics.precision_per_class[c] for c in metrics.class_names]
+        recalls = [metrics.recall_per_class[c] for c in metrics.class_names]
+        for idx, class_name in enumerate(metrics.class_names):
+            plt.plot(recalls[idx], precisions[idx], marker='o', label=f'Class {class_name}')
+        plt.legend()
+        plt.figure(figsize=(10, 8))
+        plt.title('Precision-Recall Curve')
+        plt.xlabel('Recall')
+        plt.ylabel('Precision')
+
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        plt.show()
         
     def generate_report(self, metrics: EvaluationMetrics) -> str:
         """Generate detailed text report"""
