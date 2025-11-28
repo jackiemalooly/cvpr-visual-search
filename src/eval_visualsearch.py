@@ -102,7 +102,10 @@ def main():
             print(reporter.generate_report(metrics))
             try:
                 reporter.plot_confusion_matrix(metrics)
-                #reporter.plot_precision_recall_curve(metrics)
+            except Exception as err:
+                print(f"[Eval] Could not render confusion matrix: {err}")
+            try:
+                reporter.plot_precision_recall_curve(metrics)
             except Exception as err:
                 print(f"[Eval] Could not render precision-recall curve: {err}")
             results_path = os.path.join(BASE_PATH, "evaluation_results.csv")

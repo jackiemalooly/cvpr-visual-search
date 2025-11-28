@@ -2,8 +2,10 @@ import os
 import cv2
 import sys
 import math
+import csv
 import scipy.io as sio
 import numpy as np
+from typing import Dict
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dotenv import load_dotenv
 load_dotenv()
@@ -101,6 +103,15 @@ def mat_path_to_image_id(mat_path: str) -> str:
     """Return the dataset image identifier from a descriptor path."""
     return os.path.splitext(os.path.basename(mat_path))[0]
 
+def label_pixel_width(text: str) -> int:
+    (text_w, _), _ = cv2.getTextSize(
+        text,
+        LABEL_FONT,
+        LABEL_SCALE,
+        LABEL_THICKNESS
+    )
+    return text_w
+
 def load_descriptor_bank(descriptor_folder: str, descriptor_subfolder: str):
     """Load all descriptors in the requested subfolder."""
     descriptor_dir = os.path.join(descriptor_folder, descriptor_subfolder)
@@ -122,3 +133,25 @@ def load_descriptor_bank(descriptor_folder: str, descriptor_subfolder: str):
         raise RuntimeError(f"No descriptor files found in {descriptor_dir}")
 
     return np.array(all_feat), all_files
+
+def load_ground_truth_labels(base_path: str) -> Dict[str, str]:
+    """Load image_id -> class label mapping from CSV if available."""
+    gt_path = os.getenv(
+        "GROUND_TRUTH_FILE",
+        os.path.join(base_path, "ground_truth_labels.csv")
+    )
+    if not os.path.exists(gt_path):
+        print(f"[Metrics] Ground truth file not found at {gt_path}. "
+              "Precision/recall will be skipped.")
+        return {}
+
+    with open(gt_path, newline='') as csvfile:
+        reader = csv.DictReader(csvfile)
+
+        ground_truth = {}
+        for row in reader:
+            image_id = (row.get('image_id') or '').strip()
+            label = (row.get('class_id') or '').strip()
+            if image_id and label:
+                ground_truth[image_id] = label
+    return ground_truth

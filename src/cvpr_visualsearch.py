@@ -10,7 +10,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from cvpr_compare import cvpr_compare
-from image_handling import descriptor_to_image_path, load_and_fit_image, add_label
+from image_handling import (
+    descriptor_to_image_path,
+    load_and_fit_image,
+    add_label,
+    load_ground_truth_labels,
+)
+from evals import compute_precision_recall_at_k
 
 def main():
     """Main function to perform visual search and evaluation"""
@@ -34,6 +40,7 @@ def main():
 
     # Convert ALLFEAT to a numpy array
     ALLFEAT = np.array(ALLFEAT)
+    ground_truth = load_ground_truth_labels(BASE_PATH)
 
     # Pick a random image as the query
     NIMG = ALLFEAT.shape[0]
@@ -51,31 +58,74 @@ def main():
     dst.sort(key=lambda x: x[0])
 
     SHOW = 15
+    BASE_CELL_SIZE = (200, 150)
+    LABEL_FONT = cv2.FONT_HERSHEY_SIMPLEX
+    LABEL_SCALE = 0.5
+    LABEL_THICKNESS = 1
+    LABEL_PADDING = 12
 
-    # Prepare list of result paths, skipping the query itself
-    result_img_paths = []
+    # Prepare top matches, skipping the query itself
+    top_matches = []
     for distance, idx in dst:
         if idx == queryimg:
             continue
-        result_mat_path = ALLFILES[idx]
-        result_img_paths.append(descriptor_to_image_path(result_mat_path))
-        if len(result_img_paths) == SHOW:
+        top_matches.append((distance, idx))
+        if len(top_matches) == SHOW:
             break
+
+    precision_recall_stats = compute_precision_recall_at_k(
+        top_matches, queryimg, ALLFILES, ground_truth
+    )
+
+    if precision_recall_stats:
+        print("\nPrecision/Recall over top results:")
+        print(f"{'n':>3} {'Result':>12} {'Precision':>10} {'Recall':>10}")
+        for stat in precision_recall_stats:
+            print(f"{stat['n']:>3} {stat['candidate_id']:>12} "
+                  f"{stat['precision']:>10.3f} {stat['recall']:>10.3f}")
+
+    # Build label text ahead of time so cells wide enough
+    labeled_matches = []
+    label_texts = ["Query"]
+    for rank, (_, idx) in enumerate(top_matches, start=1):
+        label = f"Rank {rank}"
+        if precision_recall_stats and len(precision_recall_stats) >= rank:
+            pr = precision_recall_stats[rank - 1]
+            label += f" | P={pr['precision']:.2f} R={pr['recall']:.2f}"
+        label_texts.append(label)
+        labeled_matches.append((idx, label))
+
+    def label_pixel_width(text: str) -> int:
+        (text_w, _), _ = cv2.getTextSize(
+            text,
+            LABEL_FONT,
+            LABEL_SCALE,
+            LABEL_THICKNESS
+        )
+        return text_w
+
+    max_label_width = max(label_pixel_width(text) for text in label_texts)
+    cell_width = max(BASE_CELL_SIZE[0], max_label_width + LABEL_PADDING)
+    cell_size = (cell_width, BASE_CELL_SIZE[1])
 
     # Load images and build labeled cells
     cells = []
-    for rank, img_path in enumerate(result_img_paths, start=1):
-        cell = load_and_fit_image(img_path)
+    for idx, label in labeled_matches:
+        img_path = descriptor_to_image_path(ALLFILES[idx])
+        cell = load_and_fit_image(img_path, cell_size=cell_size)
         if cell is None:
             print(f"Warning: Could not load result image at {img_path}")
             continue
-        cells.append(add_label(cell, f"Rank {rank}"))
+        cells.append(add_label(cell, label))
 
     if not cells:
         raise RuntimeError("No images could be loaded to display.")
 
     # Place query image at the top of the cells and label as "Query"
-    query_cell = load_and_fit_image(descriptor_to_image_path(ALLFILES[queryimg]))
+    query_cell = load_and_fit_image(
+        descriptor_to_image_path(ALLFILES[queryimg]),
+        cell_size=cell_size
+    )
     query_cell = add_label(query_cell, "Query")
     cells.insert(0, query_cell) 
 

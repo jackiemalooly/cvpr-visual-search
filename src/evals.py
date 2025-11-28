@@ -8,6 +8,7 @@ import seaborn as sns
 from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
 from pathlib import Path
+from image_handling import mat_path_to_image_id
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -60,7 +61,7 @@ class VisualSearchEvaluator:
         y_true = [r.actual_class for r in self.results if r.actual_class]
         y_pred = [r.predicted_class for r in self.results if r.actual_class]
         
-        return confusion_matrix(y_true, y_pred, labels=self.class_names)
+        return confusion_matrix(y_true, y_pred, labels=self.class_names, normalize='true')
     
     def evaluate(self) -> EvaluationMetrics:
         """Perform complete evaluation"""
@@ -99,11 +100,11 @@ class EvaluationReporter:
         
     def plot_confusion_matrix(self, metrics: EvaluationMetrics, save_path: Optional[str] = None):
         """Plot and optionally save confusion matrix"""
-        plt.figure(figsize=(10, 8))
+        plt.figure(figsize=(15, 10))
         sns.heatmap(
             metrics.confusion_matrix,
             annot=True,
-            fmt='d',
+            fmt='.2f',
             cmap='Blues',
             xticklabels=metrics.class_names,
             yticklabels=metrics.class_names
@@ -199,3 +200,39 @@ def init_evaluator(base_path: str):
     evaluator.ground_truth = dict(zip(gt_df['image_id'], gt_df['true_class']))
     reporter = EvaluationReporter(evaluator)
     return evaluator, reporter
+
+def compute_precision_recall_at_k(top_matches: List[tuple],
+                                  query_idx: int,
+                                  all_files: List[str],
+                                  ground_truth: Dict[str, str]):
+    """Return per-rank precision/recall stats for the query if GT is available."""
+    if not ground_truth:
+        return None
+
+    query_id = mat_path_to_image_id(all_files[query_idx])
+    query_label = ground_truth.get(query_id)
+    if not query_label:
+        print(f"[Metrics] Missing ground-truth label for query {query_id}.")
+        return None
+
+    relevant_total = sum(1 for label in ground_truth.values() if label == query_label) - 1
+    if relevant_total <= 0:
+        print(f"[Metrics] Not enough relevant samples to compute recall for class {query_label}.")
+        return None
+
+    stats = []
+    relevant_found = 0
+    for rank, (_, candidate_idx) in enumerate(top_matches, start=1):
+        candidate_id = mat_path_to_image_id(all_files[candidate_idx])
+        candidate_label = ground_truth.get(candidate_id)
+        if candidate_label == query_label:
+            relevant_found += 1
+        precision = relevant_found / rank
+        recall = relevant_found / relevant_total
+        stats.append({
+            "n": rank,
+            "candidate_id": candidate_id,
+            "precision": precision,
+            "recall": recall,
+        })
+    return stats
