@@ -91,11 +91,11 @@ def build_confusion_matrix(stats_with_data: list[dict], top_k: int = 1, class_la
 
     if not labels:
         labels = _collect_class_labels(stats_with_data)
-    matrix = sk_confusion_matrix(y_true, y_pred, labels=labels)
-    return matrix.astype(np.float32), labels
+    matrix = sk_confusion_matrix(y_true, y_pred, labels=labels, normalize='true')
+    return matrix.astype(np.float64), labels
 
 def render_confusion_matrix_image(confusion_matrix, class_labels,
-                                  cell_size=80, axis_padding=140):
+                                  cell_size=100, axis_padding=220):
     """Turn the numeric confusion matrix into a labeled heatmap image."""
     label_count = len(class_labels)
     if label_count == 0:
@@ -131,7 +131,7 @@ def render_confusion_matrix_image(confusion_matrix, class_labels,
     canvas[axis_padding:, axis_padding:] = heatmap_color
 
     font = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = 0.6
+    font_scale = 0.8
     thickness = 2
 
     # Axis labels
@@ -140,7 +140,7 @@ def render_confusion_matrix_image(confusion_matrix, class_labels,
         "Predicted",
         (axis_padding + (label_count * cell_size) // 2 - 80, axis_padding - 60),
         font,
-        0.8,
+        1.0,
         (255, 255, 255),
         2,
         cv2.LINE_AA
@@ -148,9 +148,9 @@ def render_confusion_matrix_image(confusion_matrix, class_labels,
     cv2.putText(
         canvas,
         "True",
-        (20, axis_padding + (label_count * cell_size) // 2),
+        (max(10, axis_padding // 6), axis_padding + (label_count * cell_size) // 2),
         font,
-        0.8,
+        1.0,
         (255, 255, 255),
         2,
         cv2.LINE_AA
@@ -163,9 +163,9 @@ def render_confusion_matrix_image(confusion_matrix, class_labels,
         cv2.putText(
             canvas,
             label,
-            (text_x, axis_padding - 20),
+            (text_x, axis_padding - 30),
             font,
-            0.6,
+            0.8,
             (255, 255, 255),
             2,
             cv2.LINE_AA
@@ -175,9 +175,9 @@ def render_confusion_matrix_image(confusion_matrix, class_labels,
         cv2.putText(
             canvas,
             label,
-            (20, text_y),
+            (axis_padding - 30, text_y),
             font,
-            0.6,
+            0.8,
             (255, 255, 255),
             2,
             cv2.LINE_AA
@@ -185,12 +185,12 @@ def render_confusion_matrix_image(confusion_matrix, class_labels,
 
     for row in range(label_count):
         for col in range(label_count):
-            value = int(confusion_matrix[row, col])
+            value = confusion_matrix[row, col]
             cell_x = axis_padding + col * cell_size
             cell_y = axis_padding + row * cell_size
             norm_value = normalized[row, col]
             text_color = (0, 0, 0) if norm_value > 0.6 else (255, 255, 255)
-            text = str(value)
+            text = f"{value:.2f}"
             text_size, _ = cv2.getTextSize(text, font, font_scale, thickness)
             text_x = cell_x + (cell_size - text_size[0]) // 2
             text_y = cell_y + (cell_size + text_size[1]) // 2

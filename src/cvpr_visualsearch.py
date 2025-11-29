@@ -263,7 +263,6 @@ def main():
     plt.xlabel('Recall')
     plt.ylabel('Precision')
     plt.title('Average Precision-Recall Curve Across Queries')
-    plt.grid(True, linestyle='--', alpha=0.4)
     plt.tight_layout()
     plt.savefig(os.path.join(results_dir, f"pr_curve_{EXPERIMENT_NAME}.png"))
     plt.show()
