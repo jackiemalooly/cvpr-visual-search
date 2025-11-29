@@ -103,15 +103,6 @@ def mat_path_to_image_id(mat_path: str) -> str:
     """Return the dataset image identifier from a descriptor path."""
     return os.path.splitext(os.path.basename(mat_path))[0]
 
-def label_pixel_width(text: str) -> int:
-    (text_w, _), _ = cv2.getTextSize(
-        text,
-        LABEL_FONT,
-        LABEL_SCALE,
-        LABEL_THICKNESS
-    )
-    return text_w
-
 def load_descriptor_bank(descriptor_folder: str, descriptor_subfolder: str):
     """Load all descriptors in the requested subfolder."""
     descriptor_dir = os.path.join(descriptor_folder, descriptor_subfolder)
@@ -155,3 +146,9 @@ def load_ground_truth_labels(base_path: str) -> Dict[str, str]:
             if image_id and label:
                 ground_truth[image_id] = label
     return ground_truth
+
+def extract_class_from_image_id(image_id: str) -> str:
+    """Return the class prefix that precedes the first underscore."""
+    if not image_id:
+        return ""
+    return image_id.split("_", 1)[0]

@@ -9,6 +9,7 @@ from random import sample
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dotenv import load_dotenv
+from sklearn.metrics import confusion_matrix as sk_confusion_matrix
 load_dotenv()
 
 from cvpr_compare import cvpr_compare
@@ -18,8 +19,16 @@ from image_handling import (
     add_label,
     load_ground_truth_labels,
     mat_path_to_image_id,
+    extract_class_from_image_id,
 )
-from evals import compute_precision_recall_at_k
+from evals import (
+    compute_precision_recall_at_k,
+    build_confusion_matrix,
+    render_confusion_matrix_image,
+    show_confusion_matrix_image,
+    _collect_class_labels,
+)
+
 
 def main():
     """Main function to perform visual search and evaluation"""
@@ -35,6 +44,7 @@ def main():
     DESCRIPTOR_SUBFOLDER = 'globalRGBhisto'
 
     # Constants
+    EXPERIMENT_NAME = 'baseline_RGBhisto'
     SHOW = 15
     BASE_CELL_SIZE = (200, 150)
     DISPLAY_SCALE = 0.55
@@ -142,53 +152,104 @@ def main():
             x = padding + col_idx * (cell_w + padding)
             grid[y:y + cell_h, x:x + cell_w] = cell
 
-    cv2.imshow("Query and Top Results", grid)
+    print("--------------------------------")
+    print("Displaying queries and top results...")
+    print("--------------------------------")
+    cv2.imshow("Queries and Top Results", grid)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
+    print(f"Saving queries and top results to {os.path.join(BASE_PATH, f"queries_and_top_results_{EXPERIMENT_NAME}.png")}")
+    cv2.imwrite(os.path.join(BASE_PATH, f"queries_and_top_results_{EXPERIMENT_NAME}.png"), grid)
 
     # Persist and plot precision/recall information when available
     print("--------------------------------")
     print("Persisting precision/recall statistics...")
-    stats_with_data = [
-        (query_idx, stats)
-        for query_idx, stats in precision_recall_stats_all
-        if stats
-    ]
+    stats_with_data = []
+    for query_idx, stats in precision_recall_stats_all:
+        if not stats:
+            continue
+        query_id = mat_path_to_image_id(ALLFILES[query_idx])
+        query_class = extract_class_from_image_id(query_id)
+        enriched_stats = []
+        for entry in stats:
+            candidate_class = extract_class_from_image_id(entry["candidate_id"])
+            enriched_stats.append({
+                **entry,
+                "candidate_class": candidate_class,
+            })
+        stats_with_data.append({
+            "query_index": query_idx,
+            "query_id": query_id,
+            "query_class": query_class,
+            "stats": enriched_stats,
+        })
 
     if not stats_with_data:
         print("No precision/recall statistics available. Skipping CSV export and PR curve.")
         return
 
+    class_labels = _collect_class_labels(stats_with_data)
+
     results_dir = os.path.join(BASE_PATH, "results")
     os.makedirs(results_dir, exist_ok=True)
-    csv_path = os.path.join(results_dir, "precision_recall_stats.csv")
+    csv_path = os.path.join(results_dir, f"precision_recall_stats_{EXPERIMENT_NAME}.csv")
 
     with open(csv_path, "w", newline="") as csvfile:
-        fieldnames = ["query_index", "query_id", "rank", "candidate_id", "precision", "recall"]
+        fieldnames = [
+            "query_index",
+            "query_id",
+            "query_class",
+            "rank",
+            "candidate_id",
+            "candidate_class",
+            "precision",
+            "recall",
+        ]
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
-        for query_idx, stats in stats_with_data:
-            query_id = mat_path_to_image_id(ALLFILES[query_idx])
-            for entry in stats:
+        for entry in stats_with_data:
+            for stat in entry["stats"]:
                 writer.writerow({
-                    "query_index": query_idx,
-                    "query_id": query_id,
-                    "rank": entry["n"],
-                    "candidate_id": entry["candidate_id"],
-                    "precision": entry["precision"],
-                    "recall": entry["recall"],
+                    "query_index": entry["query_index"],
+                    "query_id": entry["query_id"],
+                    "query_class": entry["query_class"],
+                    "rank": stat["n"],
+                    "candidate_id": stat["candidate_id"],
+                    "candidate_class": stat["candidate_class"],
+                    "precision": stat["precision"],
+                    "recall": stat["recall"],
                 })
 
     print(f"Precision/recall statistics saved to {csv_path}")
 
+    # Calculate Average Precision (AP) and Mean Average Precision (MAP)
+    ap = 0
+    map = 0
+    for entry in stats_with_data:
+        for stat in entry["stats"]:
+            ap += stat["precision"] * stat["recall"]
+    if stats_with_data:
+        ap /= len(stats_with_data)
+    map = ap / len(stats_with_data) if stats_with_data else 0
+    print(f"Average Precision (AP): {ap}")
+    print(f"Mean Average Precision (MAP): {map}")
+    # Save AP and MAP to a new CSV file
+    ap_map_csv_path = os.path.join(results_dir, f"ap_map_stats_{EXPERIMENT_NAME}.csv")
+    with open(ap_map_csv_path, "w", newline="") as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=["ap", "map"])
+        writer.writeheader()
+        writer.writerow({"ap": ap, "map": map})
+    print(f"AP and MAP saved to {ap_map_csv_path}")
+
     # Build averaged precision-recall curve across all queries
-    max_rank = max(len(stats) for _, stats in stats_with_data)
+    max_rank = max(len(entry["stats"]) for entry in stats_with_data)
     avg_precisions = []
     avg_recalls = []
     for rank in range(1, max_rank + 1):
         precisions_at_rank = []
         recalls_at_rank = []
-        for _, stats in stats_with_data:
+        for entry in stats_with_data:
+            stats = entry["stats"]
             if len(stats) >= rank:
                 precisions_at_rank.append(stats[rank - 1]["precision"])
                 recalls_at_rank.append(stats[rank - 1]["recall"])
@@ -198,14 +259,34 @@ def main():
 
     print("Plotting averaged precision-recall curve...")
     plt.figure(figsize=(8, 6))
-    plt.plot(avg_recalls, avg_precisions, marker="o")
+    plt.plot(avg_recalls, avg_precisions)
     plt.xlabel('Recall')
     plt.ylabel('Precision')
     plt.title('Average Precision-Recall Curve Across Queries')
     plt.grid(True, linestyle='--', alpha=0.4)
     plt.tight_layout()
+    plt.savefig(os.path.join(results_dir, f"pr_curve_{EXPERIMENT_NAME}.png"))
     plt.show()
 
+    print("--------------------------------")
+    print("Building confusion matrices...")
+    cm_specs = [
+        ("Top-1", 1, f"confusion_matrix_top1_{EXPERIMENT_NAME}.png"),
+        ("Top-5", 5, f"confusion_matrix_top5_{EXPERIMENT_NAME}.png"),
+        (f"Top-{SHOW}", SHOW, f"confusion_matrix_top{SHOW}_{EXPERIMENT_NAME}.png"),
+    ]
+
+    for label, top_k, filename in cm_specs:
+        cm, labels = build_confusion_matrix(
+            stats_with_data,
+            top_k=top_k,
+            class_labels=class_labels
+        )
+        cm_image = render_confusion_matrix_image(cm, labels)
+        save_path = os.path.join(results_dir, filename)
+        cv2.imwrite(save_path, cm_image)
+        print(f"{label} confusion matrix saved to {save_path}")
+        show_confusion_matrix_image(cm_image, f"{label} Confusion Matrix")
 
 if __name__ == "__main__":
     main()
