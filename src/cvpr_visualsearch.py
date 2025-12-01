@@ -1,15 +1,14 @@
 import os
-import math
 import csv
 import numpy as np
 import scipy.io as sio
 import cv2
 import matplotlib.pyplot as plt
 from random import sample
+from collections import Counter
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dotenv import load_dotenv
-from sklearn.metrics import confusion_matrix as sk_confusion_matrix
 load_dotenv()
 
 from cvpr_compare import cvpr_compare
@@ -29,6 +28,9 @@ from evals import (
     _collect_class_labels,
 )
 
+# To run this script, select the descriptor you want to use by 
+# changing the DESCRIPTOR_SUBFOLDER variable to the name of the descriptor.
+# Be sure to change the EXPERIMENT_NAME variable to the name of the unique experiment.
 
 def main():
     """Main function to perform visual search and evaluation"""
@@ -44,7 +46,7 @@ def main():
     DESCRIPTOR_SUBFOLDER = 'globalRGBhisto'
 
     # Constants
-    EXPERIMENT_NAME = 'baseline_RGBhisto'
+    EXPERIMENT_NAME = 'globalRGBhisto_Q4'
     SHOW = 15
     BASE_CELL_SIZE = (200, 150)
     DISPLAY_SCALE = 0.55
@@ -63,11 +65,12 @@ def main():
     # Convert ALLFEAT to a numpy array
     ALLFEAT = np.array(ALLFEAT)
     ground_truth = load_ground_truth_labels(BASE_PATH)
+    class_counts = Counter(ground_truth.values())
 
     # Pick several images as the queries
     print("--------------------------------")
     print("Picking queries...")
-    NUM_QUERIES = 10
+    NUM_QUERIES = 100
     NIMG = ALLFEAT.shape[0]
     QUERY_IMGS = sample(range(NIMG), NUM_QUERIES) # using random.sample to avoid duplicates
     print(f"Picked {NUM_QUERIES} queries: {QUERY_IMGS}")
@@ -176,6 +179,7 @@ def main():
             enriched_stats.append({
                 **entry,
                 "candidate_class": candidate_class,
+                "is_relevant": candidate_class == query_class,
             })
         stats_with_data.append({
             "query_index": query_idx,
@@ -222,24 +226,50 @@ def main():
 
     print(f"Precision/recall statistics saved to {csv_path}")
 
-    # Calculate Average Precision (AP) and Mean Average Precision (MAP)
-    ap = 0
-    map = 0
+    # Calculate Average Precision (AP) and Mean Average Precision (mAP)
+    per_query_ap = []
     for entry in stats_with_data:
-        for stat in entry["stats"]:
-            ap += stat["precision"] * stat["recall"]
-    if stats_with_data:
-        ap /= len(stats_with_data)
-    map = ap / len(stats_with_data) if stats_with_data else 0
-    print(f"Average Precision (AP): {ap}")
-    print(f"Mean Average Precision (MAP): {map}")
-    # Save AP and MAP to a new CSV file
-    ap_map_csv_path = os.path.join(results_dir, f"ap_map_stats_{EXPERIMENT_NAME}.csv")
-    with open(ap_map_csv_path, "w", newline="") as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=["ap", "map"])
+        query_class = entry.get("query_class")
+        stats = entry.get("stats", [])
+        relevant_total = class_counts.get(query_class, 0) - 1
+        if relevant_total <= 0:
+            print(f"[Metrics] Not enough relevant samples to compute AP for class {query_class}.")
+            continue
+        print(f"[Metrics] Computing AP for class {query_class} with {relevant_total} relevant samples.")
+        ap_sum = 0.0
+        for stat in stats:
+            if stat.get("is_relevant"):
+                ap_sum += stat["precision"]
+        ap_score = ap_sum / relevant_total if relevant_total else 0.0
+        per_query_ap.append({
+            "query_index": entry["query_index"],
+            "query_id": entry["query_id"],
+            "ap": ap_score,
+        })
+
+    map_score = (
+        sum(item["ap"] for item in per_query_ap) / len(per_query_ap)
+        if per_query_ap else 0.0
+    )
+    print(f"Computed AP for {len(per_query_ap)} queries.")
+    print(f"Mean Average Precision (MAP): {map_score}")
+
+    # Persist AP per query and mAP summary
+    per_query_ap_csv_path = os.path.join(results_dir, f"per_query_ap_{EXPERIMENT_NAME}.csv")
+    with open(per_query_ap_csv_path, "w", newline="") as csvfile:
+        fieldnames = ["query_index", "query_id", "ap"]
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
-        writer.writerow({"ap": ap, "map": map})
-    print(f"AP and MAP saved to {ap_map_csv_path}")
+        for record in per_query_ap:
+            writer.writerow(record)
+    print(f"Per-query AP saved to {per_query_ap_csv_path}")
+
+    ap_map_csv_path = os.path.join(results_dir, f"map_stats_{EXPERIMENT_NAME}.csv")
+    with open(ap_map_csv_path, "w", newline="") as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=["map"])
+        writer.writeheader()
+        writer.writerow({"map": map_score})
+    print(f"MAP summary saved to {ap_map_csv_path}")
 
     # Build averaged precision-recall curve across all queries
     max_rank = max(len(entry["stats"]) for entry in stats_with_data)
