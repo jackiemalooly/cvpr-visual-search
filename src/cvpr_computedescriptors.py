@@ -22,10 +22,10 @@ print(f"BASE_PATH: {BASE_PATH}")
 
 DATASET_FOLDER = os.path.join(BASE_PATH, 'MSRC_ObjCategImageDatabase_v2')
 OUT_FOLDER = os.path.join(BASE_PATH, 'descriptors')
-OUT_SUBFOLDER = 'globalRGBhisto_Q100'
+OUT_SUBFOLDER = 'globalRGBhisto_Q14'
 
 # Constants
-Q = 100
+Q = 14
 
 def main() -> None:
     images_dir = os.path.join(DATASET_FOLDER, 'Images')
