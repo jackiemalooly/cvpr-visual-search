@@ -44,8 +44,8 @@ def main():
 
     # Constants
     DESCRIPTOR_FOLDER = os.path.join(BASE_PATH, 'descriptors')
-    DESCRIPTOR_SUBFOLDER = 'globalRGBhisto_Q10'
-    EXPERIMENT_NAME = 'globalRGBhisto_Q10'
+    DESCRIPTOR_SUBFOLDER = 'globalRGBhisto_Q100'
+    EXPERIMENT_NAME = 'globalRGBhisto_Q100'
     SHOW = 20
     BASE_CELL_SIZE = (200, 150)
     DISPLAY_SCALE = 0.55
