@@ -42,12 +42,11 @@ def main():
     BASE_PATH = os.getenv("BASE_PATH", DEFAULT_BASE_PATH)
     print(f"BASE_PATH: {BASE_PATH}")
 
+    # Constants
     DESCRIPTOR_FOLDER = os.path.join(BASE_PATH, 'descriptors')
     DESCRIPTOR_SUBFOLDER = 'globalRGBhisto'
-
-    # Constants
     EXPERIMENT_NAME = 'globalRGBhisto_Q4'
-    SHOW = 15
+    SHOW = 20
     BASE_CELL_SIZE = (200, 150)
     DISPLAY_SCALE = 0.55
 
@@ -162,7 +161,7 @@ def main():
     cv2.waitKey(0)
     cv2.destroyAllWindows()
     print(f"Saving queries and top results to {os.path.join(BASE_PATH, f"queries_and_top_results_{EXPERIMENT_NAME}.png")}")
-    cv2.imwrite(os.path.join(BASE_PATH, f"queries_and_top_results_{EXPERIMENT_NAME}.png"), grid)
+    cv2.imwrite(os.path.join(BASE_PATH, f"results/queries_and_top_results_{EXPERIMENT_NAME}.png"), grid)
 
     # Persist and plot precision/recall information when available
     print("--------------------------------")

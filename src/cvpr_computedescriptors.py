@@ -14,6 +14,7 @@ from extractGlobalColorHisto import rgb_histogram
 # To run this script, select the descriptor you want to compute.
 # Use the preferred descriptor function on line 42 and 
 # be sure to change the OUT_SUBFOLDER variable to the name of the descriptor.
+# If using global RGB histogram, change the Q constant for desired quantization.
 
 DEFAULT_BASE_PATH = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BASE_PATH = os.getenv("BASE_PATH", DEFAULT_BASE_PATH)
@@ -21,8 +22,10 @@ print(f"BASE_PATH: {BASE_PATH}")
 
 DATASET_FOLDER = os.path.join(BASE_PATH, 'MSRC_ObjCategImageDatabase_v2')
 OUT_FOLDER = os.path.join(BASE_PATH, 'descriptors')
-OUT_SUBFOLDER = 'globalRGBhisto'
+OUT_SUBFOLDER = 'globalRGBhisto_Q10'
 
+# Constants
+Q = 10
 
 def main() -> None:
     images_dir = os.path.join(DATASET_FOLDER, 'Images')
@@ -39,7 +42,7 @@ def main() -> None:
         fout = os.path.join(OUT_FOLDER, OUT_SUBFOLDER, filename.replace('.bmp', '.mat'))
 
         # Call extractRandom (or another feature extraction function) to get the descriptor
-        F = rgb_histogram(img, Q=4)
+        F = rgb_histogram(img, Q)
 
         # Save the descriptor to a .mat file
         sio.savemat(fout, {'F': F})
