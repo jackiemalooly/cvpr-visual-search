@@ -30,7 +30,6 @@ Thumbs.db
 *.swo
 
 # Project-specific data (remove if you need these tracked)
-descriptors/
 MSRC_ObjCategImageDatabase_v2/
 *.mat
 

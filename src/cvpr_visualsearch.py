@@ -1,27 +1,56 @@
 import os
-import math
+import csv
 import numpy as np
 import scipy.io as sio
 import cv2
-from random import randint
+import matplotlib.pyplot as plt
+from random import sample
+from collections import Counter
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dotenv import load_dotenv
 load_dotenv()
 
 from cvpr_compare import cvpr_compare
-from image_handling import descriptor_to_image_path, load_and_fit_image, add_label
+from image_handling import (
+    descriptor_to_image_path,
+    load_and_fit_image,
+    add_label,
+    load_ground_truth_labels,
+    mat_path_to_image_id,
+    extract_class_from_image_id,
+)
+from evals import (
+    compute_precision_recall_at_k,
+    build_confusion_matrix,
+    render_confusion_matrix_image,
+    show_confusion_matrix_image,
+    _collect_class_labels,
+)
+
+# To run this script, select the descriptor you want to use by 
+# changing the DESCRIPTOR_SUBFOLDER variable to the name of the descriptor.
+# Be sure to change the EXPERIMENT_NAME variable to the name of the unique experiment.
 
 def main():
     """Main function to perform visual search and evaluation"""
     # Set up paths and load descriptors
+    print("Starting visual search...")
+    print("--------------------------------")
+    print("Loading data...")
     DEFAULT_BASE_PATH = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     BASE_PATH = os.getenv("BASE_PATH", DEFAULT_BASE_PATH)
     print(f"BASE_PATH: {BASE_PATH}")
 
+    # Constants
     DESCRIPTOR_FOLDER = os.path.join(BASE_PATH, 'descriptors')
-    DESCRIPTOR_SUBFOLDER = 'globalRGBhisto'
-    
+    DESCRIPTOR_SUBFOLDER = 'globalRGBhisto_Q14'
+    EXPERIMENT_NAME = 'globalRGBhisto_Q14'
+    SHOW = 20
+    BASE_CELL_SIZE = (200, 150)
+    DISPLAY_SCALE = 0.55
+
+    # Load up the data
     ALLFEAT = []
     ALLFILES = []
     descriptor_dir = os.path.join(DESCRIPTOR_FOLDER, DESCRIPTOR_SUBFOLDER)
@@ -34,70 +63,258 @@ def main():
 
     # Convert ALLFEAT to a numpy array
     ALLFEAT = np.array(ALLFEAT)
+    ground_truth = load_ground_truth_labels(BASE_PATH)
+    class_counts = Counter(ground_truth.values())
 
-    # Pick a random image as the query
+    # Pick several images as the queries
+    print("--------------------------------")
+    print("Picking queries...")
+    NUM_QUERIES = 100
     NIMG = ALLFEAT.shape[0]
-    queryimg = randint(0, NIMG - 1)
+    QUERY_IMGS = sample(range(NIMG), NUM_QUERIES) # using random.sample to avoid duplicates
+    print(f"Picked {NUM_QUERIES} queries: {QUERY_IMGS}")
+    # For each query image, compute the distance between the query and all other descriptors and store the results in a list of tuples: (queryimg, dst)
+    # dst is a list of tuples: (distance, idx)
+    # [(query_id0, [(dist, idx), ...]), (query_id1, [...]), ...]
+    print("--------------------------------")
+    print("Processing queries...")
+    dst_all = []
+    top_matches_all = []
+    precision_recall_stats_all = []
+    for queryimg in QUERY_IMGS:
+        print(f"--------------------------------")
+        print(f"Computing distances for query {queryimg}")
+        dst = []
+        query = ALLFEAT[queryimg]
+        for i in range(NIMG):
+            candidate = ALLFEAT[i]
+            distance = cvpr_compare(query, candidate)
+            dst.append((distance, i))
+        # Sort the distances
+        dst.sort(key=lambda x: x[0])
+        dst_all.append((queryimg, dst))
 
-    # Compute the distance between the query and all other descriptors
-    dst = []
-    query = ALLFEAT[queryimg]
-    for i in range(NIMG):
-        candidate = ALLFEAT[i]
-        distance = cvpr_compare(query, candidate)
-        dst.append((distance, i))
+        # Prepare top matches and compute precision and recall, skipping the query itself
+        print(f"Preparing {SHOW} top matches and precision and recall stats for query {queryimg}...")
+        print("--------------------------------")
+        top_matches = []
+        for distance, idx in dst:
+            if idx == queryimg:
+                continue
+            top_matches.append((distance, idx))
+            if len(top_matches) == SHOW:
+                break
+        top_matches_all.append((queryimg, top_matches))
 
-    # Sort the distances
-    dst.sort(key=lambda x: x[0])
+        precision_recall_stats = compute_precision_recall_at_k(
+            top_matches, queryimg, ALLFILES, ground_truth
+        )
+        precision_recall_stats_all.append((queryimg, precision_recall_stats))
 
-    SHOW = 15
 
-    # Prepare list of result paths, skipping the query itself
-    result_img_paths = []
-    for distance, idx in dst:
-        if idx == queryimg:
-            continue
-        result_mat_path = ALLFILES[idx]
-        result_img_paths.append(descriptor_to_image_path(result_mat_path))
-        if len(result_img_paths) == SHOW:
-            break
+    # Build a grid where each row starts with the query image and is followed by its matches
+    rows_of_cells = []
+    max_cols = 0
+    cell_size = tuple(max(40, int(dim * DISPLAY_SCALE)) for dim in BASE_CELL_SIZE)
+    padding = max(4, int(10 * DISPLAY_SCALE))
+    for queryimg, top_matches in top_matches_all:
+        row_cells = []
+        query_cell = load_and_fit_image(
+            descriptor_to_image_path(ALLFILES[queryimg]),
+            cell_size=cell_size
+        )
+        query_cell = add_label(query_cell, "Query")
+        row_cells.append(query_cell)
 
-    # Load images and build labeled cells
-    cells = []
-    for rank, img_path in enumerate(result_img_paths, start=1):
-        cell = load_and_fit_image(img_path)
-        if cell is None:
-            print(f"Warning: Could not load result image at {img_path}")
-            continue
-        cells.append(add_label(cell, f"Rank {rank}"))
+        for rank, (_, match_idx) in enumerate(top_matches, start=1):
+            match_cell = load_and_fit_image(
+                descriptor_to_image_path(ALLFILES[match_idx]),
+                cell_size=cell_size
+            )
+            row_cells.append(match_cell)
 
-    if not cells:
-        raise RuntimeError("No images could be loaded to display.")
+        max_cols = max(max_cols, len(row_cells))
+        rows_of_cells.append(row_cells)
 
-    # Place query image at the top of the cells and label as "Query"
-    query_cell = load_and_fit_image(descriptor_to_image_path(ALLFILES[queryimg]))
-    query_cell = add_label(query_cell, "Query")
-    cells.insert(0, query_cell) 
+    if not rows_of_cells:
+        print("No query results to display.")
+        return
 
-    # Arrange cells into a grid for a single window display
-    cols = 4
-    rows = math.ceil(len(cells) / cols)
-    cell_h, cell_w = cells[0].shape[0], cells[0].shape[1]
-    padding = 10
+    # Arrange rows into a single window display
+    rows = len(rows_of_cells)
+    cols = max_cols
+    cell_h, cell_w = rows_of_cells[0][0].shape[0], rows_of_cells[0][0].shape[1]
     grid_h = rows * cell_h + (rows + 1) * padding
     grid_w = cols * cell_w + (cols + 1) * padding
     grid = np.full((grid_h, grid_w, 3), (20, 20, 20), dtype=np.uint8)
 
-    for idx, cell in enumerate(cells):
-        row = idx // cols
-        col = idx % cols
-        y = padding + row * (cell_h + padding)
-        x = padding + col * (cell_w + padding)
-        grid[y:y + cell_h, x:x + cell_w] = cell
+    for row_idx, row_cells in enumerate(rows_of_cells):
+        for col_idx, cell in enumerate(row_cells):
+            y = padding + row_idx * (cell_h + padding)
+            x = padding + col_idx * (cell_w + padding)
+            grid[y:y + cell_h, x:x + cell_w] = cell
 
-    cv2.imshow("Query and Top Results", grid)
+    print("--------------------------------")
+    print("Displaying queries and top results...")
+    print("--------------------------------")
+    cv2.imshow("Queries and Top Results", grid)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
+    print(f"Saving queries and top results to {os.path.join(BASE_PATH, f"queries_and_top_results_{EXPERIMENT_NAME}.png")}")
+    cv2.imwrite(os.path.join(BASE_PATH, f"results/queries_and_top_results_{EXPERIMENT_NAME}.png"), grid)
+
+    # Persist and plot precision/recall information when available
+    print("--------------------------------")
+    print("Persisting precision/recall statistics...")
+    stats_with_data = []
+    for query_idx, stats in precision_recall_stats_all:
+        if not stats:
+            continue
+        query_id = mat_path_to_image_id(ALLFILES[query_idx])
+        query_class = extract_class_from_image_id(query_id)
+        enriched_stats = []
+        for entry in stats:
+            candidate_class = extract_class_from_image_id(entry["candidate_id"])
+            enriched_stats.append({
+                **entry,
+                "candidate_class": candidate_class,
+                "is_relevant": candidate_class == query_class,
+            })
+        stats_with_data.append({
+            "query_index": query_idx,
+            "query_id": query_id,
+            "query_class": query_class,
+            "stats": enriched_stats,
+        })
+
+    if not stats_with_data:
+        print("No precision/recall statistics available. Skipping CSV export and PR curve.")
+        return
+
+    class_labels = _collect_class_labels(stats_with_data)
+
+    results_dir = os.path.join(BASE_PATH, "results")
+    os.makedirs(results_dir, exist_ok=True)
+    csv_path = os.path.join(results_dir, f"precision_recall_stats_{EXPERIMENT_NAME}.csv")
+
+    with open(csv_path, "w", newline="") as csvfile:
+        fieldnames = [
+            "query_index",
+            "query_id",
+            "query_class",
+            "rank",
+            "candidate_id",
+            "candidate_class",
+            "precision",
+            "recall",
+        ]
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        for entry in stats_with_data:
+            for stat in entry["stats"]:
+                writer.writerow({
+                    "query_index": entry["query_index"],
+                    "query_id": entry["query_id"],
+                    "query_class": entry["query_class"],
+                    "rank": stat["n"],
+                    "candidate_id": stat["candidate_id"],
+                    "candidate_class": stat["candidate_class"],
+                    "precision": stat["precision"],
+                    "recall": stat["recall"],
+                })
+
+    print(f"Precision/recall statistics saved to {csv_path}")
+
+    # Calculate Average Precision (AP) and Mean Average Precision (mAP)
+    per_query_ap = []
+    for entry in stats_with_data:
+        query_class = entry.get("query_class")
+        stats = entry.get("stats", [])
+        relevant_total = class_counts.get(query_class, 0) - 1
+        if relevant_total <= 0:
+            print(f"[Metrics] Not enough relevant samples to compute AP for class {query_class}.")
+            continue
+        print(f"[Metrics] Computing AP for class {query_class} with {relevant_total} relevant samples.")
+        ap_sum = 0.0
+        for stat in stats:
+            if stat.get("is_relevant"):
+                ap_sum += stat["precision"]
+        ap_score = ap_sum / relevant_total if relevant_total else 0.0
+        per_query_ap.append({
+            "query_index": entry["query_index"],
+            "query_id": entry["query_id"],
+            "ap": ap_score,
+        })
+
+    map_score = (
+        sum(item["ap"] for item in per_query_ap) / len(per_query_ap)
+        if per_query_ap else 0.0
+    )
+    print(f"Computed AP for {len(per_query_ap)} queries.")
+    print(f"Mean Average Precision (MAP): {map_score}")
+
+    # Persist AP per query and mAP summary
+    per_query_ap_csv_path = os.path.join(results_dir, f"per_query_ap_{EXPERIMENT_NAME}.csv")
+    with open(per_query_ap_csv_path, "w", newline="") as csvfile:
+        fieldnames = ["query_index", "query_id", "ap"]
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        for record in per_query_ap:
+            writer.writerow(record)
+    print(f"Per-query AP saved to {per_query_ap_csv_path}")
+
+    ap_map_csv_path = os.path.join(results_dir, f"map_stats_{EXPERIMENT_NAME}.csv")
+    with open(ap_map_csv_path, "w", newline="") as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=["map"])
+        writer.writeheader()
+        writer.writerow({"map": map_score})
+    print(f"MAP summary saved to {ap_map_csv_path}")
+
+    # Build averaged precision-recall curve across all queries
+    max_rank = max(len(entry["stats"]) for entry in stats_with_data)
+    avg_precisions = []
+    avg_recalls = []
+    for rank in range(1, max_rank + 1):
+        precisions_at_rank = []
+        recalls_at_rank = []
+        for entry in stats_with_data:
+            stats = entry["stats"]
+            if len(stats) >= rank:
+                precisions_at_rank.append(stats[rank - 1]["precision"])
+                recalls_at_rank.append(stats[rank - 1]["recall"])
+        if precisions_at_rank and recalls_at_rank:
+            avg_precisions.append(sum(precisions_at_rank) / len(precisions_at_rank))
+            avg_recalls.append(sum(recalls_at_rank) / len(recalls_at_rank))
+
+    print("Plotting averaged precision-recall curve...")
+    plt.figure(figsize=(8, 6))
+    plt.plot(avg_recalls, avg_precisions)
+    plt.xlabel('Recall')
+    plt.ylabel('Precision')
+    plt.title('Average Precision-Recall Curve Across Queries')
+    plt.tight_layout()
+    plt.savefig(os.path.join(results_dir, f"pr_curve_{EXPERIMENT_NAME}.png"))
+    plt.show()
+
+    print("--------------------------------")
+    print("Building confusion matrices...")
+    cm_specs = [
+        ("Top-1", 1, f"confusion_matrix_top1_{EXPERIMENT_NAME}.png"),
+        ("Top-5", 5, f"confusion_matrix_top5_{EXPERIMENT_NAME}.png"),
+        (f"Top-{SHOW}", SHOW, f"confusion_matrix_top{SHOW}_{EXPERIMENT_NAME}.png"),
+    ]
+
+    for label, top_k, filename in cm_specs:
+        cm, labels = build_confusion_matrix(
+            stats_with_data,
+            top_k=top_k,
+            class_labels=class_labels
+        )
+        cm_image = render_confusion_matrix_image(cm, labels)
+        save_path = os.path.join(results_dir, filename)
+        cv2.imwrite(save_path, cm_image)
+        print(f"{label} confusion matrix saved to {save_path}")
+        show_confusion_matrix_image(cm_image, f"{label} Confusion Matrix")
 
 if __name__ == "__main__":
     main()

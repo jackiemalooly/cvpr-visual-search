@@ -1,201 +1,218 @@
-import os
 import numpy as np
-import pandas as pd
-from sklearn.metrics import confusion_matrix, classification_report
-from sklearn.metrics import accuracy_score, precision_recall_fscore_support
+import cv2
 import matplotlib.pyplot as plt
-import seaborn as sns
-from typing import List, Dict, Tuple, Optional
-from dataclasses import dataclass
-from pathlib import Path
+from typing import List, Dict
+from sklearn.metrics import confusion_matrix as sk_confusion_matrix
+from image_handling import mat_path_to_image_id
 
-from dotenv import load_dotenv
-load_dotenv()
+def _sorted_class_labels(labels):
+    """Return labels sorted numerically when possible, otherwise lexicographically."""
+    def sort_key(label):
+        try:
+            return (0, int(label))
+        except ValueError:
+            return (1, label)
+    return sorted(labels, key=sort_key)
 
-@dataclass
-class SearchResult:
-    """Represents a single search result"""
-    image_id: str
-    predicted_class: str
-    confidence: Optional[float] = None
-    actual_class: Optional[str] = None
+def _collect_class_labels(stats_with_data: list[dict]) -> list[str]:
+    """Collect unique class labels appearing in queries or retrieved candidates."""
+    labels = set()
+    for entry in stats_with_data:
+        query_class = entry.get("query_class")
+        if query_class:
+            labels.add(query_class)
+        for stat in entry.get("stats", []):
+            candidate_class = stat.get("candidate_class")
+            if candidate_class:
+                labels.add(candidate_class)
+    return _sorted_class_labels(labels)
 
-@dataclass
-class EvaluationMetrics:
-    """Container for evaluation metrics"""
-    accuracy: float
-    precision_per_class: Dict[str, float]
-    recall_per_class: Dict[str, float]
-    f1_per_class: Dict[str, float]
-    confusion_matrix: np.ndarray
-    class_names: List[str]
+def compute_precision_recall_at_k(top_matches: List[tuple],
+                                  query_idx: int,
+                                  all_files: List[str],
+                                  ground_truth: Dict[str, str]):
+    """Return per-rank precision/recall stats for the query if GT is available."""
+    if not ground_truth:
+        return None
 
-class VisualSearchEvaluator:
-    def __init__(self, class_names: List[str]):
-        self.class_names = class_names
-        self.results: List[SearchResult] = []
-        self.ground_truth: Dict[str, str] = {}
-        
-    def load_ground_truth(self, ground_truth_file: str):
-        """Load ground truth labels from file"""
-        df = pd.read_csv(ground_truth_file)
-        self.ground_truth = dict(zip(df['image_id'], df['true_class']))
-        
-    def add_search_result(self, image_id: str, predicted_class: str, confidence: float):
-        """Add a single search result"""
-        actual_class = self.ground_truth.get(image_id)
-        result = SearchResult(image_id, predicted_class, confidence, actual_class)
-        self.results.append(result)
-        
-    def add_batch_results(self, predictions: List[Tuple[str, str, float]]):
-        """Add multiple search results at once"""
-        for image_id, pred_class, confidence in predictions:
-            self.add_search_result(image_id, pred_class, confidence)
-    
-    def calculate_confusion_matrix(self) -> np.ndarray:
-        """Calculate confusion matrix"""
-        if not self.results:
-            raise ValueError("No results to evaluate")
-            
-        y_true = [r.actual_class for r in self.results if r.actual_class]
-        y_pred = [r.predicted_class for r in self.results if r.actual_class]
-        
-        return confusion_matrix(y_true, y_pred, labels=self.class_names)
-    
-    def evaluate(self) -> EvaluationMetrics:
-        """Perform complete evaluation"""
-        y_true = [r.actual_class for r in self.results if r.actual_class]
-        y_pred = [r.predicted_class for r in self.results if r.actual_class]
-        
-        if not y_true:
-            raise ValueError("No ground truth data available")
-        
-        # Calculate metrics
-        accuracy = accuracy_score(y_true, y_pred)
-        precision, recall, f1, _ = precision_recall_fscore_support(
-            y_true, y_pred, labels=self.class_names, average=None
+    query_id = mat_path_to_image_id(all_files[query_idx])
+    query_label = ground_truth.get(query_id)
+    if not query_label:
+        print(f"[Metrics] Missing ground-truth label for query {query_id}.")
+        return None
+
+    relevant_total = sum(1 for label in ground_truth.values() if label == query_label) - 1
+    if relevant_total <= 0:
+        print(f"[Metrics] Not enough relevant samples to compute recall for class {query_label}.")
+        return None
+
+    stats = []
+    relevant_found = 0
+    for rank, (_, candidate_idx) in enumerate(top_matches, start=1):
+        candidate_id = mat_path_to_image_id(all_files[candidate_idx])
+        candidate_label = ground_truth.get(candidate_id)
+        if candidate_label == query_label:
+            relevant_found += 1
+        precision = relevant_found / rank
+        recall = relevant_found / relevant_total
+        stats.append({
+            "n": rank,
+            "candidate_id": candidate_id,
+            "precision": precision,
+            "recall": recall,
+        })
+    return stats
+
+def build_confusion_matrix(stats_with_data: list[dict], top_k: int = 1, class_labels: list[str] = None):
+    """
+    Build a confusion matrix using sklearn.metrics.confusion_matrix.
+    If top_k is provided, only the first top_k results per query contribute.
+    """
+    y_true = []
+    y_pred = []
+    labels = list(class_labels) if class_labels else []
+
+    for entry in stats_with_data:
+        query_class = entry.get("query_class")
+        stats = entry.get("stats", [])
+        if not query_class or not stats:
+            continue
+
+        selected_stats = stats if top_k is None else stats[:top_k]
+        for stat in selected_stats:
+            candidate_class = stat.get("candidate_class")
+            if not candidate_class:
+                continue
+            y_true.append(query_class)
+            y_pred.append(candidate_class)
+
+    if not y_true:
+        return np.zeros((0, 0), dtype=np.float32), labels
+
+    if not labels:
+        labels = _collect_class_labels(stats_with_data)
+    matrix = sk_confusion_matrix(y_true, y_pred, labels=labels, normalize='true')
+    return matrix.astype(np.float64), labels
+
+def render_confusion_matrix_image(confusion_matrix, class_labels,
+                                  cell_size=100, axis_padding=220):
+    """Turn the numeric confusion matrix into a labeled heatmap image."""
+    label_count = len(class_labels)
+    if label_count == 0:
+        # Return a placeholder image indicating missing data
+        placeholder = np.full((200, 400, 3), (30, 30, 30), dtype=np.uint8)
+        cv2.putText(
+            placeholder,
+            "No data for confusion matrix",
+            (10, 100),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA
         )
-        
-        # Convert to dictionaries
-        precision_dict = dict(zip(self.class_names, precision))
-        recall_dict = dict(zip(self.class_names, recall))
-        f1_dict = dict(zip(self.class_names, f1))
-        
-        cm = self.calculate_confusion_matrix()
-        
-        return EvaluationMetrics(
-            accuracy=accuracy,
-            precision_per_class=precision_dict,
-            recall_per_class=recall_dict,
-            f1_per_class=f1_dict,
-            confusion_matrix=cm,
-            class_names=self.class_names
-        )
+        return placeholder
 
-# Visualization and Reporting
-class EvaluationReporter:
-    def __init__(self, evaluator: VisualSearchEvaluator):
-        self.evaluator = evaluator
-        
-    def plot_confusion_matrix(self, metrics: EvaluationMetrics, save_path: Optional[str] = None):
-        """Plot and optionally save confusion matrix"""
-        plt.figure(figsize=(10, 8))
-        sns.heatmap(
-            metrics.confusion_matrix,
-            annot=True,
-            fmt='d',
-            cmap='Blues',
-            xticklabels=metrics.class_names,
-            yticklabels=metrics.class_names
-        )
-        plt.title('Confusion Matrix - Visual Search System')
-        plt.ylabel('True Class')
-        plt.xlabel('Predicted Class')
-        
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        plt.show()
-
-    def plot_precision_recall_curve(self, metrics: EvaluationMetrics, save_path: Optional[str] = None):
-        """Plot precision-recall curve"""
-        # Retrieve per-class precision and recall as lists and plot PR curve for each class
-        precisions = [metrics.precision_per_class[c] for c in metrics.class_names]
-        recalls = [metrics.recall_per_class[c] for c in metrics.class_names]
-        for idx, class_name in enumerate(metrics.class_names):
-            plt.plot(recalls[idx], precisions[idx], marker='o', label=f'Class {class_name}')
-        plt.legend()
-        plt.figure(figsize=(10, 8))
-        plt.title('Precision-Recall Curve')
-        plt.xlabel('Recall')
-        plt.ylabel('Precision')
-
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        plt.show()
-        
-    def generate_report(self, metrics: EvaluationMetrics) -> str:
-        """Generate detailed text report"""
-        report = f"""
-Visual Search System Evaluation Report
-=====================================
-
-Overall Accuracy: {metrics.accuracy:.3f}
-
-Per-Class Performance:
-"""
-        for class_name in metrics.class_names:
-            precision = metrics.precision_per_class[class_name]
-            recall = metrics.recall_per_class[class_name]
-            f1 = metrics.f1_per_class[class_name]
-            
-            report += f"""
-{class_name}:
-  Precision: {precision:.3f}
-  Recall:    {recall:.3f}
-  F1-Score:  {f1:.3f}
-"""
-        return report
-    
-    def save_detailed_results(self, filepath: str):
-        """Save detailed results to CSV"""
-        results_data = []
-        for result in self.evaluator.results:
-            results_data.append({
-                'image_id': result.image_id,
-                'predicted_class': result.predicted_class,
-                'actual_class': result.actual_class,
-                'confidence': result.confidence,
-                'correct': result.predicted_class == result.actual_class
-            })
-        
-        df = pd.DataFrame(results_data)
-        df.to_csv(filepath, index=False)
-
-def init_evaluator(base_path: str):
-    """Create evaluator/report instances if ground-truth metadata is available."""
-    ground_truth_file = os.getenv(
-        "GROUND_TRUTH_FILE",
-        os.path.join(base_path, "ground_truth_labels.csv")
+    max_value = float(confusion_matrix.max()) if confusion_matrix.size else 1.0
+    if max_value == 0:
+        max_value = 1.0
+    normalized = (confusion_matrix / max_value).astype(np.float32)
+    heatmap_gray = (normalized * 255).astype(np.uint8)
+    heatmap_color = cv2.applyColorMap(heatmap_gray, cv2.COLORMAP_VIRIDIS)
+    heatmap_color = cv2.resize(
+        heatmap_color,
+        (label_count * cell_size, label_count * cell_size),
+        interpolation=cv2.INTER_NEAREST
     )
 
-    if not os.path.exists(ground_truth_file):
-        print(f"[Eval] Ground truth file not found at {ground_truth_file}. Skipping evaluation.")
-        return None, None
+    canvas_h = label_count * cell_size + axis_padding
+    canvas_w = label_count * cell_size + axis_padding
+    canvas = np.full((canvas_h, canvas_w, 3), (30, 30, 30), dtype=np.uint8)
+    canvas[axis_padding:, axis_padding:] = heatmap_color
 
-    gt_df = pd.read_csv(ground_truth_file)
-    if 'image_id' not in gt_df.columns:
-        print(f"[Eval] Missing 'image_id' column in {ground_truth_file}. Skipping evaluation.")
-        return None, None
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.8
+    thickness = 2
 
-    class_column = 'true_class' if 'true_class' in gt_df.columns else 'class_id'
-    if class_column not in gt_df.columns:
-        print(f"[Eval] Expected '{class_column}' column not found in {ground_truth_file}. Skipping evaluation.")
-        return None, None
+    # Axis labels
+    cv2.putText(
+        canvas,
+        "Predicted",
+        (axis_padding + (label_count * cell_size) // 2 - 80, axis_padding - 60),
+        font,
+        1.0,
+        (255, 255, 255),
+        2,
+        cv2.LINE_AA
+    )
+    cv2.putText(
+        canvas,
+        "True",
+        (max(10, axis_padding // 6), axis_padding + (label_count * cell_size) // 2),
+        font,
+        1.0,
+        (255, 255, 255),
+        2,
+        cv2.LINE_AA
+    )
 
-    gt_df['true_class'] = gt_df[class_column].astype(str)
-    class_names = sorted(gt_df['true_class'].unique(), key=lambda label: int(label))
+    # Tick labels and counts
+    for idx, label in enumerate(class_labels):
+        text_size, _ = cv2.getTextSize(label, font, 0.6, 2)
+        text_x = axis_padding + idx * cell_size + (cell_size - text_size[0]) // 2
+        cv2.putText(
+            canvas,
+            label,
+            (text_x, axis_padding - 30),
+            font,
+            0.8,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA
+        )
 
-    evaluator = VisualSearchEvaluator(class_names=class_names)
-    evaluator.ground_truth = dict(zip(gt_df['image_id'], gt_df['true_class']))
-    reporter = EvaluationReporter(evaluator)
-    return evaluator, reporter
+        text_y = axis_padding + idx * cell_size + (cell_size + text_size[1]) // 2
+        cv2.putText(
+            canvas,
+            label,
+            (axis_padding - 30, text_y),
+            font,
+            0.8,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA
+        )
+
+    for row in range(label_count):
+        for col in range(label_count):
+            value = confusion_matrix[row, col]
+            cell_x = axis_padding + col * cell_size
+            cell_y = axis_padding + row * cell_size
+            norm_value = normalized[row, col]
+            text_color = (0, 0, 0) if norm_value > 0.6 else (255, 255, 255)
+            text = f"{value:.2f}"
+            text_size, _ = cv2.getTextSize(text, font, font_scale, thickness)
+            text_x = cell_x + (cell_size - text_size[0]) // 2
+            text_y = cell_y + (cell_size + text_size[1]) // 2
+            cv2.putText(
+                canvas,
+                text,
+                (text_x, text_y),
+                font,
+                font_scale,
+                text_color,
+                thickness,
+                cv2.LINE_AA
+            )
+
+    return canvas
+
+def show_confusion_matrix_image(confusion_matrix_image, title):
+    """Display the rendered confusion matrix using matplotlib."""
+    rgb_image = cv2.cvtColor(confusion_matrix_image, cv2.COLOR_BGR2RGB)
+    plt.figure(figsize=(8, 6))
+    plt.imshow(rgb_image)
+    plt.title(title)
+    plt.axis("off")
+    plt.tight_layout()
+    plt.show()
